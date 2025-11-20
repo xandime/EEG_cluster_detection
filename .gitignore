@@ -1,5 +1,6 @@
 # ignore unzipped dataset
-dataset/
+dataset/*.csv
+dataset/dataset/
 
 # dont ignore zipped dataset
 !dataset/dataset.zip
