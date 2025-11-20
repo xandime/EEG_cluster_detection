@@ -1,2 +1,12 @@
 # ignore unzipped dataset
-dataset/
+dataset/*.csv
+dataset/dataset/
+
+# dont ignore zipped dataset
+!dataset/dataset.zip
+
+# ignore IDE specific files
+.idea
+.vscode
+__pycache__/
+.venv/
