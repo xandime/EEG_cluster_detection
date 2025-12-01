@@ -27,15 +27,13 @@ def load_preprocessed_data(filepath='dataset/Dortmund_features_preprocessed.csv'
 
 
 def load_pca_data(pca_filepath='dataset/dortmund_pca_transformed.csv',
-                  loadings_filepath='dataset/dortmund_pca_loadings.csv',
-                  components_filepath='dataset/dortmund_pca_components.csv'):
+                  loadings_filepath='dataset/dortmund_pca_loadings.csv'):
     """
     Load PCA-transformed data and related information.
 
     Args:
         pca_filepath: str. Path to PCA-transformed data.
         loadings_filepath: str. Path to PCA loadings.
-        components_filepath: str. Path to PCA components info.
 
     Returns:
         pca_data: DataFrame with PCA-transformed features.
@@ -47,9 +45,8 @@ def load_pca_data(pca_filepath='dataset/dortmund_pca_transformed.csv',
     pca_features = pca_data.values
 
     loadings = pd.read_csv(loadings_filepath, index_col=0)
-    components_info = pd.read_csv(components_filepath)
 
-    return pca_data, pca_features, loadings, components_info
+    return pca_data, pca_features, loadings
 
 
 def load_raw_features(filepath='dataset/Dortmund_features.csv'):
@@ -141,3 +138,12 @@ def get_feature_statistics(data):
     stats = data.describe()
     return stats
 
+
+if __name__ == "__main__":
+    # Example usage
+    raw_data, _, _ = load_raw_features()
+    preprocessed_data, dropped = preprocess_features(raw_data)
+    save_preprocessed_data(preprocessed_data)
+    stats = get_feature_statistics(preprocessed_data)
+    print(stats)
+    print("Dropped features:", dropped)
