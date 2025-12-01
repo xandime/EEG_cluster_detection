@@ -1,13 +1,15 @@
 """
 K-means clustering implementation for EEG participant subtyping.
 
-This module provides functions for K-means clustering with support for:
-- Preprocessed data
-- PCA-transformed data (TODO)
-- Interpretable feature space (TODO)
 """
 
 import numpy as np
+from kneed import KneeLocator
+from metrics.internal_metrics import (
+    compute_silhouette_score,
+    compute_davies_bouldin_score,
+    compute_calinski_harabasz_score
+)
 
 
 def initialize_clusters(data, k):
@@ -181,6 +183,58 @@ def kmeans_multiple_runs(data, k, n_runs=10, max_iters=100, threshold=1e-5,
     return best_result
 
 
-# TODO: Later apply to interpretable feature space
-# TODO: Later apply to PCA-transformed data
+def select_optimal_k(data, k_range, metric='elbow', n_runs=10, max_iters=100,
+                     threshold=1e-5, random_state=None):
+    """Select the optimal number of clusters k using internal validation metrics.
 
+    Args:
+        data: numpy array of shape (N, d). Data to cluster.
+        k_range: list of int. Range of k values to test.
+        metric: str. Metric to use for selection. Options: 'silhouette', 'davies_bouldin',
+                'calinski_harabasz', 'elbow'.
+        n_runs: int. Number of runs for each k (for stability).
+        max_iters: int. Maximum iterations per run.
+        threshold: float. Convergence threshold.
+        random_state: int or None. Random seed.
+
+    Returns:
+        optimal_k: int. Optimal number of clusters.
+        results: dict. Results for each k, with keys as k values, values as kmeans results.
+    """
+    results = {}
+    optimal_k = None
+
+    for k in k_range:
+        result = kmeans_multiple_runs(data, k, n_runs=n_runs, max_iters=max_iters,
+                                     threshold=threshold, verbose=False, random_state=random_state)
+        results[k] = result
+
+    if metric == 'elbow':
+        losses = [results[k]['losses'][-1] for k in k_range]
+        kn = KneeLocator(k_range, losses, curve='convex', direction='decreasing')
+        optimal_k = kn.knee
+        if optimal_k is None:
+            # Fallback: choose k with largest relative improvement drop
+            improvements = [-np.diff(losses)[i] / losses[i] for i in range(len(losses)-1)]
+            optimal_k = k_range[np.argmax(improvements) + 1] if improvements else k_range[0]
+    else:
+        scores = []
+        for k in k_range:
+            assignments = results[k]['assignments']
+            if metric == 'silhouette':
+                score = compute_silhouette_score(data, assignments)
+            elif metric == 'davies_bouldin':
+                score = compute_davies_bouldin_score(data, assignments)
+            elif metric == 'calinski_harabasz':
+                score = compute_calinski_harabasz_score(data, assignments)
+            else:
+                raise ValueError(f"Unknown metric: {metric}")
+            scores.append(score)
+
+        if metric in ['silhouette', 'calinski_harabasz']:
+            optimal_k = k_range[np.argmax(scores)]
+        elif metric == 'davies_bouldin':
+            optimal_k = k_range[np.argmin(scores)]
+
+
+    return optimal_k, results
