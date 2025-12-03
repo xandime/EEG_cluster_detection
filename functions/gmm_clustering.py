@@ -15,7 +15,7 @@ def gmm_clustering(data, n_components, covariance_type='full', random_state=42,
                    max_iter=100, verbose=False):
     """
     Perform Gaussian Mixture Model clustering.
-
+    
     Args:
         data: numpy array of shape (N, d). Data to cluster.
         n_components: int. Number of mixture components (clusters).

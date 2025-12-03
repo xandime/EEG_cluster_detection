@@ -26,8 +26,8 @@ def load_preprocessed_data(filepath='dataset/Dortmund_features_preprocessed.csv'
     return data, features, subject_ids
 
 
-def load_pca_data(pca_filepath='dataset/dortmund_pca_transformed.csv',
-                  loadings_filepath='dataset/dortmund_pca_loadings.csv'):
+def load_pca_data(pca_filepath='dataset/Dortmund_pca.csv',
+                  loadings_filepath='dataset/Dortmund_pca_loadings.csv'):
     """
     Load PCA-transformed data and related information.
 
