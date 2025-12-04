@@ -147,3 +147,10 @@ if __name__ == "__main__":
     stats = get_feature_statistics(preprocessed_data)
     print(stats)
     print("Dropped features:", dropped)
+
+    raw_data_L, _, _ = load_raw_features('dataset/Lemon_features.csv')
+    preprocessed_data_L, dropped_L = preprocess_features(raw_data_L)
+    save_preprocessed_data(preprocessed_data_L, output_path='dataset/Lemon_features_preprocessed.csv')
+    stats_L = get_feature_statistics(preprocessed_data_L)
+    print(stats_L)
+    print("Dropped features:", dropped_L)
