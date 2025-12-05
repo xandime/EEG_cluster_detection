@@ -4,6 +4,669 @@ from scipy import stats
 from typing import Dict, Tuple, Optional
 import matplotlib.pyplot as plt
 import seaborn as sns
+import scikit_posthocs as sp
+import pingouin as pg
+from statsmodels.formula.api import ols
+from statsmodels.stats.anova import anova_lm
+
+
+# ========================================
+# COMPREHENSIVE ANALYSIS FUNCTION
+# ========================================
+
+def analyze_continuous_variable(df: pd.DataFrame,
+                                 group_col: str,
+                                 value_col: str,
+                                 alpha: float = 0.05,
+                                 show_plot: bool = True,
+                                 save_path: Optional[str] = None) -> Dict:
+    """
+    Comprehensive analysis of a continuous variable (e.g., Age) across groups (e.g., Clusters).
+
+    Automatically selects the appropriate statistical test based on assumption checks.
+
+    Logic Flow:
+        1. Check normality (Shapiro-Wilk per group)
+        2. Check variance homogeneity (Levene's test)
+        3. Select and run main test:
+           - Normal + Equal Variance → One-Way ANOVA
+           - Normal + Unequal Variance → Welch's ANOVA
+           - Non-Normal → Kruskal-Wallis
+        4. If significant, run post-hoc:
+           - After ANOVA → Games-Howell
+           - After Kruskal-Wallis → Dunn's test
+        5. Calculate effect size (ω² or ε²)
+        6. Generate visualization
+
+    Args:
+        df: DataFrame containing the data
+        group_col: Column name for group labels (e.g., 'cluster')
+        value_col: Column name for continuous variable (e.g., 'age')
+        alpha: Significance level (default: 0.05)
+        show_plot: Whether to display the plot
+        save_path: Optional path to save the figure
+
+    Returns:
+        Dictionary containing:
+            - 'test_name': Name of the test used
+            - 'statistic': Test statistic
+            - 'p_value': P-value of the main test
+            - 'significant': Boolean indicating significance
+            - 'significant_pairs': List of significant pairwise comparisons
+            - 'effect_size': Effect size value
+            - 'effect_size_name': Name of effect size measure
+            - 'effect_interpretation': Interpretation of effect size
+            - 'assumptions': Dict with normality and variance check results
+            - 'posthoc_table': DataFrame with post-hoc results (if applicable)
+            - 'figure': matplotlib Figure object
+
+    Example:
+        >>> df = pd.DataFrame({'cluster': [0,0,0,1,1,1], 'age': [25,30,28,55,60,58]})
+        >>> result = analyze_continuous_variable(df, 'cluster', 'age')
+    """
+
+    # =========================================================================
+    # STEP 1: ASSUMPTION CHECK - NORMALITY (Shapiro-Wilk per group)
+    # =========================================================================
+    print("=" * 70)
+    print(f"ANALYZING: {value_col} by {group_col}")
+    print("=" * 70)
+
+    groups = df[group_col].unique()
+    n_groups = len(groups)
+
+    print(f"\n[1/5] CHECKING NORMALITY (Shapiro-Wilk test per group)...")
+
+    normality_results = {}
+    all_normal = True
+
+    for group in sorted(groups):
+        group_data = df[df[group_col] == group][value_col].dropna()
+
+        if len(group_data) >= 3:  # Shapiro-Wilk requires n >= 3
+            stat, p = stats.shapiro(group_data)
+            is_normal = p > alpha
+            normality_results[group] = {'statistic': stat, 'p_value': p, 'normal': is_normal}
+
+            if not is_normal:
+                all_normal = False
+
+            status = "✓ Normal" if is_normal else "✗ Non-normal"
+            print(f"       Group {group}: W={stat:.4f}, p={p:.4f} → {status}")
+        else:
+            normality_results[group] = {'statistic': None, 'p_value': None, 'normal': None}
+            print(f"       Group {group}: Insufficient samples (n={len(group_data)})")
+
+    normality_assumption = all_normal
+    print(f"       → Overall: {'NORMAL' if normality_assumption else 'NON-NORMAL'}")
+
+    # =========================================================================
+    # STEP 2: ASSUMPTION CHECK - VARIANCE HOMOGENEITY (Levene's test)
+    # =========================================================================
+    print(f"\n[2/5] CHECKING VARIANCE HOMOGENEITY (Levene's test)...")
+
+    group_data_list = [df[df[group_col] == g][value_col].dropna().values for g in sorted(groups)]
+    levene_stat, levene_p = stats.levene(*group_data_list)
+    equal_variance = levene_p > alpha
+
+    status = "✓ Equal" if equal_variance else "✗ Unequal"
+    print(f"       Levene's test: W={levene_stat:.4f}, p={levene_p:.4f} → {status} variances")
+
+    # =========================================================================
+    # STEP 3: SELECT AND RUN MAIN TEST
+    # =========================================================================
+    print(f"\n[3/5] SELECTING AND RUNNING MAIN TEST...")
+
+    if normality_assumption and equal_variance:
+        # Normal + Equal Variance → One-Way ANOVA
+        test_name = "One-Way ANOVA"
+        print(f"       Assumptions: Normal=True, Equal Variance=True")
+        print(f"       → Running {test_name}...")
+
+        f_stat, p_value = stats.f_oneway(*group_data_list)
+        statistic = f_stat
+        test_type = "parametric"
+
+    elif normality_assumption and not equal_variance:
+        # Normal + Unequal Variance → Welch's ANOVA
+        test_name = "Welch's ANOVA"
+        print(f"       Assumptions: Normal=True, Equal Variance=False")
+        print(f"       → Running {test_name}...")
+
+        # Use pingouin for Welch's ANOVA
+        welch_result = pg.welch_anova(data=df, dv=value_col, between=group_col)
+        f_stat = welch_result['F'].values[0]
+        p_value = welch_result['p-unc'].values[0]
+        statistic = f_stat
+        test_type = "parametric"
+
+    else:
+        # Non-Normal → Kruskal-Wallis
+        test_name = "Kruskal-Wallis"
+        print(f"       Assumptions: Normal=False")
+        print(f"       → Running {test_name}...")
+
+        h_stat, p_value = stats.kruskal(*group_data_list)
+        statistic = h_stat
+        test_type = "non-parametric"
+
+    significant = p_value < alpha
+    sig_symbol = "***" if p_value < 0.001 else "**" if p_value < 0.01 else "*" if p_value < 0.05 else "ns"
+
+    print(f"       Result: statistic={statistic:.4f}, p={p_value:.4f} {sig_symbol}")
+    print(f"       → {'SIGNIFICANT' if significant else 'NOT SIGNIFICANT'} (α={alpha})")
+
+    # =========================================================================
+    # STEP 4: POST-HOC ANALYSIS (if significant)
+    # =========================================================================
+    print(f"\n[4/5] POST-HOC ANALYSIS...")
+
+    significant_pairs = []
+    posthoc_table = None
+
+    if significant and n_groups > 2:
+        if test_type == "parametric":
+            # Games-Howell (robust to unequal variances)
+            print(f"       → Running Games-Howell post-hoc test...")
+            posthoc_result = pg.pairwise_gameshowell(data=df, dv=value_col, between=group_col)
+            posthoc_table = posthoc_result
+
+            # Extract significant pairs
+            for _, row in posthoc_result.iterrows():
+                if row['pval'] < alpha:
+                    pair = (int(row['A']), int(row['B']))
+                    significant_pairs.append(pair)
+                    print(f"       {row['A']} vs {row['B']}: p={row['pval']:.4f} *")
+
+        else:
+            # Dunn's test with Bonferroni correction
+            print(f"       → Running Dunn's test (Bonferroni correction)...")
+            posthoc_matrix = sp.posthoc_dunn(df, val_col=value_col, group_col=group_col, p_adjust='bonferroni')
+
+            # Convert matrix to pairwise table
+            pairs_list = []
+            sorted_groups = sorted(groups)
+            for i, g1 in enumerate(sorted_groups):
+                for g2 in sorted_groups[i+1:]:
+                    p_adj = posthoc_matrix.loc[g1, g2]
+                    pairs_list.append({'group_1': g1, 'group_2': g2, 'p_adj': p_adj})
+                    if p_adj < alpha:
+                        significant_pairs.append((int(g1), int(g2)))
+                        print(f"       {g1} vs {g2}: p_adj={p_adj:.4f} *")
+
+            posthoc_table = pd.DataFrame(pairs_list)
+
+        if not significant_pairs:
+            print(f"       → No significant pairwise differences found")
+    elif significant and n_groups == 2:
+        print(f"       → Only 2 groups, no post-hoc needed (main test is sufficient)")
+        significant_pairs = [(sorted(groups)[0], sorted(groups)[1])]
+    else:
+        print(f"       → Skipped (main test not significant)")
+
+    # =========================================================================
+    # STEP 5: EFFECT SIZE
+    # =========================================================================
+    print(f"\n[5/5] CALCULATING EFFECT SIZE...")
+
+    # Get overall data
+    all_values = df[value_col].dropna().values
+    all_groups = df.loc[df[value_col].notna(), group_col].values
+
+    n_total = len(all_values)
+    grand_mean = np.mean(all_values)
+
+    if test_type == "parametric":
+        # Omega-Squared (ω²) for ANOVA
+        effect_size_name = "Omega-squared (ω²)"
+
+        # Calculate SS_between
+        ss_between = sum([
+            len(df[df[group_col] == g][value_col].dropna()) *
+            (df[df[group_col] == g][value_col].mean() - grand_mean) ** 2
+            for g in groups
+        ])
+
+        # Calculate SS_total
+        ss_total = np.sum((all_values - grand_mean) ** 2)
+
+        # Calculate SS_within and MS_within
+        ss_within = ss_total - ss_between
+        df_between = n_groups - 1
+        df_within = n_total - n_groups
+        ms_within = ss_within / df_within
+
+        # Omega-squared
+        effect_size = (ss_between - df_between * ms_within) / (ss_total + ms_within)
+        effect_size = max(0, effect_size)  # Can't be negative
+
+    else:
+        # Epsilon-Squared (ε²) for Kruskal-Wallis
+        effect_size_name = "Epsilon-squared (ε²)"
+
+        # ε² = H / (n² - 1) / (n - 1)  simplified: H / (n - 1)
+        effect_size = (statistic - n_groups + 1) / (n_total - n_groups)
+        effect_size = max(0, min(1, effect_size))  # Bound between 0 and 1
+
+    # Interpret effect size
+    if effect_size < 0.01:
+        effect_interpretation = "Negligible"
+    elif effect_size < 0.06:
+        effect_interpretation = "Small"
+    elif effect_size < 0.14:
+        effect_interpretation = "Medium"
+    else:
+        effect_interpretation = "Large"
+
+    print(f"       {effect_size_name} = {effect_size:.4f} ({effect_interpretation})")
+
+    # =========================================================================
+    # STEP 6: VISUALIZATION
+    # =========================================================================
+    print(f"\n[PLOT] Generating visualization...")
+
+    plt.ioff()
+    fig, ax = plt.subplots(figsize=(10, 6))
+
+    # Create boxplot with stripplot overlay
+    sns.boxplot(data=df, x=group_col, y=value_col, hue=group_col, ax=ax,
+                palette='Set2', width=0.5, boxprops=dict(alpha=0.7), legend=False)
+    sns.stripplot(data=df, x=group_col, y=value_col, ax=ax,
+                  color='black', alpha=0.5, size=5, jitter=True)
+
+    # Add title with test result
+    title = f"{value_col} by {group_col}\n"
+    title += f"{test_name}: "
+    if test_type == "parametric":
+        title += f"F={statistic:.2f}, "
+    else:
+        title += f"H={statistic:.2f}, "
+    title += f"p={p_value:.4f} {sig_symbol}"
+
+    ax.set_title(title, fontsize=14, fontweight='bold')
+    ax.set_xlabel(group_col, fontsize=12)
+    ax.set_ylabel(value_col, fontsize=12)
+
+    # Add effect size annotation
+    ax.text(0.98, 0.98, f"{effect_size_name}\n{effect_size:.3f} ({effect_interpretation})",
+            transform=ax.transAxes, fontsize=10, verticalalignment='top',
+            horizontalalignment='right', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+
+    # Add group statistics
+    stats_text = "Group means:\n"
+    for g in sorted(groups):
+        g_mean = df[df[group_col] == g][value_col].mean()
+        g_std = df[df[group_col] == g][value_col].std()
+        g_n = len(df[df[group_col] == g][value_col].dropna())
+        stats_text += f"  {g}: {g_mean:.1f}±{g_std:.1f} (n={g_n})\n"
+
+    ax.text(0.02, 0.98, stats_text, transform=ax.transAxes, fontsize=9,
+            verticalalignment='top', fontfamily='monospace',
+            bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.5))
+
+    plt.tight_layout()
+
+    if save_path:
+        fig.savefig(save_path, dpi=300, bbox_inches='tight')
+        print(f"       Figure saved to: {save_path}")
+
+    if show_plot:
+        plt.ion()
+        plt.show()
+
+    # =========================================================================
+    # SUMMARY
+    # =========================================================================
+    print("\n" + "=" * 70)
+    print("SUMMARY")
+    print("=" * 70)
+    print(f"Test used: {test_name}")
+    print(f"Result: {'SIGNIFICANT' if significant else 'NOT SIGNIFICANT'} (p={p_value:.4f})")
+    if significant_pairs:
+        print(f"Significant pairs: {significant_pairs}")
+    print(f"Effect size: {effect_size_name} = {effect_size:.4f} ({effect_interpretation})")
+    print("=" * 70)
+
+    # Return results dictionary
+    return {
+        'test_name': test_name,
+        'statistic': statistic,
+        'p_value': p_value,
+        'significant': significant,
+        'significant_pairs': significant_pairs,
+        'effect_size': effect_size,
+        'effect_size_name': effect_size_name,
+        'effect_interpretation': effect_interpretation,
+        'assumptions': {
+            'normality': normality_assumption,
+            'normality_results': normality_results,
+            'equal_variance': equal_variance,
+            'levene_p': levene_p
+        },
+        'posthoc_table': posthoc_table,
+        'figure': fig
+    }
+
+
+def analyze_categorical_variable(df: pd.DataFrame,
+                                  group_col: str,
+                                  cat_col: str,
+                                  alpha: float = 0.05,
+                                  show_plot: bool = True,
+                                  save_path: Optional[str] = None) -> Dict:
+    """
+    Comprehensive analysis of categorical variable relationships (e.g., Cluster vs Sex).
+
+    Automatically selects the appropriate statistical test based on expected frequencies.
+
+    Logic Flow:
+        1. Create contingency table (cross-tabulation)
+        2. Check expected frequencies:
+           - If any cell < 5 and 2x2 table → Fisher's Exact Test
+           - If any cell < 5 and larger table → Chi-Square with warning
+           - Otherwise → Chi-Square Test of Independence
+        3. Calculate Adjusted Standardized Residuals (post-hoc)
+        4. Identify significant cells (|residual| > 1.96)
+        5. Calculate Cramér's V effect size
+        6. Generate stacked bar chart visualization
+
+    Args:
+        df: DataFrame containing the data
+        group_col: Column name for group labels (e.g., 'cluster')
+        cat_col: Column name for categorical variable (e.g., 'sex', 'age_group')
+        alpha: Significance level (default: 0.05)
+        show_plot: Whether to display the plot
+        save_path: Optional path to save the figure
+
+    Returns:
+        Dictionary containing:
+            - 'test_name': Name of the test used
+            - 'statistic': Test statistic (chi2 or odds ratio)
+            - 'p_value': P-value of the test
+            - 'significant': Boolean indicating significance
+            - 'contingency_table': Observed frequencies
+            - 'expected_frequencies': Expected frequencies under independence
+            - 'residuals_table': Adjusted standardized residuals
+            - 'significant_cells': List of (group, category, residual) tuples
+            - 'cramers_v': Cramér's V effect size
+            - 'cramers_v_interpretation': Interpretation of effect size
+            - 'assumption_warning': Warning message if assumptions violated
+            - 'figure': matplotlib Figure object
+
+    Example:
+        >>> df = pd.DataFrame({'cluster': [0,0,1,1,2,2], 'sex': ['M','F','M','M','F','F']})
+        >>> result = analyze_categorical_variable(df, 'cluster', 'sex')
+    """
+
+    # =========================================================================
+    # STEP 1: CREATE CONTINGENCY TABLE
+    # =========================================================================
+    print("=" * 70)
+    print(f"ANALYZING: {cat_col} by {group_col}")
+    print("=" * 70)
+
+    print(f"\n[1/5] CREATING CONTINGENCY TABLE...")
+
+    # Create contingency table
+    contingency_table = pd.crosstab(df[group_col], df[cat_col])
+
+    n_groups = contingency_table.shape[0]
+    n_categories = contingency_table.shape[1]
+    n_total = contingency_table.sum().sum()
+
+    print(f"       Table shape: {n_groups} groups × {n_categories} categories")
+    print(f"       Total observations: {n_total}")
+    print(f"\n       Observed frequencies:")
+    print(contingency_table.to_string().replace('\n', '\n       '))
+
+    # =========================================================================
+    # STEP 2: ASSUMPTION CHECK - EXPECTED FREQUENCIES
+    # =========================================================================
+    print(f"\n[2/5] CHECKING EXPECTED FREQUENCIES...")
+
+    # Calculate expected frequencies
+    chi2_stat, p_value_chi2, dof, expected = stats.chi2_contingency(contingency_table)
+    expected_df = pd.DataFrame(expected,
+                               index=contingency_table.index,
+                               columns=contingency_table.columns)
+
+    # Check if any expected frequency < 5
+    min_expected = expected.min()
+    cells_below_5 = (expected < 5).sum()
+    total_cells = expected.size
+    pct_below_5 = (cells_below_5 / total_cells) * 100
+
+    print(f"       Minimum expected frequency: {min_expected:.2f}")
+    print(f"       Cells with expected < 5: {cells_below_5}/{total_cells} ({pct_below_5:.1f}%)")
+
+    assumption_warning = None
+
+    # =========================================================================
+    # STEP 3: SELECT AND RUN MAIN TEST
+    # =========================================================================
+    print(f"\n[3/5] SELECTING AND RUNNING MAIN TEST...")
+
+    is_2x2 = (n_groups == 2 and n_categories == 2)
+
+    if min_expected < 5:
+        if is_2x2:
+            # Fisher's Exact Test for 2x2 tables
+            test_name = "Fisher's Exact Test"
+            print(f"       Expected frequency < 5 detected in 2×2 table")
+            print(f"       → Running {test_name}...")
+
+            odds_ratio, p_value = stats.fisher_exact(contingency_table.values)
+            statistic = odds_ratio
+
+        else:
+            # Chi-Square with warning for larger tables
+            test_name = "Chi-Square Test (with warning)"
+            assumption_warning = (f"WARNING: {cells_below_5} cells ({pct_below_5:.1f}%) have expected "
+                                  f"frequency < 5. Results may be unreliable.")
+            print(f"       ⚠ {assumption_warning}")
+            print(f"       → Running Chi-Square Test anyway (no alternative for non-2×2)...")
+
+            statistic = chi2_stat
+            p_value = p_value_chi2
+    else:
+        # Standard Chi-Square Test
+        test_name = "Chi-Square Test"
+        print(f"       All expected frequencies ≥ 5 ✓")
+        print(f"       → Running {test_name}...")
+
+        statistic = chi2_stat
+        p_value = p_value_chi2
+
+    significant = p_value < alpha
+    sig_symbol = "***" if p_value < 0.001 else "**" if p_value < 0.01 else "*" if p_value < 0.05 else "ns"
+
+    if test_name == "Fisher's Exact Test":
+        print(f"       Result: Odds Ratio={statistic:.4f}, p={p_value:.4f} {sig_symbol}")
+    else:
+        print(f"       Result: χ²={statistic:.4f}, df={dof}, p={p_value:.4f} {sig_symbol}")
+    print(f"       → {'SIGNIFICANT' if significant else 'NOT SIGNIFICANT'} (α={alpha})")
+
+    # =========================================================================
+    # STEP 4: POST-HOC - ADJUSTED STANDARDIZED RESIDUALS
+    # =========================================================================
+    print(f"\n[4/5] CALCULATING ADJUSTED STANDARDIZED RESIDUALS...")
+
+    # Calculate adjusted standardized residuals
+    # Formula: (observed - expected) / sqrt(expected * (1 - row_margin/n) * (1 - col_margin/n))
+    observed = contingency_table.values
+
+    row_totals = observed.sum(axis=1, keepdims=True)
+    col_totals = observed.sum(axis=0, keepdims=True)
+
+    # Adjusted standardized residuals (ASR)
+    residuals = (observed - expected) / np.sqrt(
+        expected * (1 - row_totals / n_total) * (1 - col_totals / n_total)
+    )
+
+    residuals_df = pd.DataFrame(residuals,
+                                index=contingency_table.index,
+                                columns=contingency_table.columns)
+
+    # Identify significant cells (|residual| > 1.96 for α=0.05)
+    z_critical = stats.norm.ppf(1 - alpha / 2)  # 1.96 for α=0.05
+    significant_cells = []
+
+    print(f"       Critical value: |z| > {z_critical:.2f}")
+    print(f"\n       Adjusted Standardized Residuals:")
+
+    for group in contingency_table.index:
+        for cat in contingency_table.columns:
+            resid = residuals_df.loc[group, cat]
+            obs = contingency_table.loc[group, cat]
+            exp = expected_df.loc[group, cat]
+
+            if abs(resid) > z_critical:
+                direction = "OVER" if resid > 0 else "UNDER"
+                significant_cells.append({
+                    'group': group,
+                    'category': cat,
+                    'observed': obs,
+                    'expected': exp,
+                    'residual': resid,
+                    'direction': direction
+                })
+
+    # Print residuals table
+    print(residuals_df.round(2).to_string().replace('\n', '\n       '))
+
+    if significant_cells:
+        print(f"\n       Significant cells (|z| > {z_critical:.2f}):")
+        for cell in significant_cells:
+            symbol = "↑" if cell['direction'] == "OVER" else "↓"
+            print(f"       {symbol} {cell['group']} × {cell['category']}: "
+                  f"z={cell['residual']:.2f} ({cell['direction']}-represented)")
+    else:
+        print(f"\n       No significant deviations found")
+
+    # =========================================================================
+    # STEP 5: EFFECT SIZE - CRAMÉR'S V
+    # =========================================================================
+    print(f"\n[5/5] CALCULATING EFFECT SIZE (Cramér's V)...")
+
+    # Cramér's V = sqrt(chi2 / (n * min(r-1, c-1)))
+    min_dim = min(n_groups - 1, n_categories - 1)
+    if min_dim > 0:
+        cramers_v = np.sqrt(chi2_stat / (n_total * min_dim))
+    else:
+        cramers_v = 0.0
+
+    # Interpret effect size (Cohen's conventions)
+    if cramers_v < 0.10:
+        cramers_v_interpretation = "Negligible"
+    elif cramers_v < 0.20:
+        cramers_v_interpretation = "Small"
+    elif cramers_v < 0.30:
+        cramers_v_interpretation = "Medium"
+    else:
+        cramers_v_interpretation = "Large"
+
+    print(f"       Cramér's V = {cramers_v:.4f} ({cramers_v_interpretation})")
+
+    # =========================================================================
+    # STEP 6: VISUALIZATION - STACKED BAR CHART
+    # =========================================================================
+    print(f"\n[PLOT] Generating stacked bar chart...")
+
+    plt.ioff()
+    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+
+    # --- Plot 1: Percentage stacked bar chart ---
+    # Calculate percentages within each group
+    pct_table = contingency_table.div(contingency_table.sum(axis=1), axis=0) * 100
+
+    # Plot stacked bar chart
+    pct_table.plot(kind='bar', stacked=True, ax=axes[0],
+                   colormap='Set2', edgecolor='black', linewidth=0.5)
+
+    axes[0].set_title(f'{cat_col} Distribution by {group_col}\n(Percentages)',
+                      fontsize=12, fontweight='bold')
+    axes[0].set_xlabel(group_col, fontsize=11)
+    axes[0].set_ylabel('Percentage (%)', fontsize=11)
+    axes[0].set_xticklabels(axes[0].get_xticklabels(), rotation=0)
+    axes[0].legend(title=cat_col, bbox_to_anchor=(1.02, 1), loc='upper left')
+    axes[0].set_ylim(0, 100)
+
+    # Add percentage labels on bars
+    for container in axes[0].containers:
+        axes[0].bar_label(container, fmt='%.1f%%', label_type='center', fontsize=8)
+
+    # --- Plot 2: Residuals heatmap ---
+    sns.heatmap(residuals_df, annot=True, fmt='.2f', cmap='RdBu_r',
+                center=0, vmin=-3, vmax=3, ax=axes[1],
+                cbar_kws={'label': 'Adjusted Standardized Residual'},
+                linewidths=0.5, linecolor='gray')
+
+    # Mark significant cells
+    for i, group in enumerate(residuals_df.index):
+        for j, cat in enumerate(residuals_df.columns):
+            if abs(residuals_df.loc[group, cat]) > z_critical:
+                axes[1].add_patch(plt.Rectangle((j, i), 1, 1, fill=False,
+                                                 edgecolor='black', lw=2))
+
+    axes[1].set_title(f'Adjusted Standardized Residuals\n(|z| > {z_critical:.2f} marked)',
+                      fontsize=12, fontweight='bold')
+    axes[1].set_xlabel(cat_col, fontsize=11)
+    axes[1].set_ylabel(group_col, fontsize=11)
+
+    # Add test result as suptitle
+    if test_name == "Fisher's Exact Test":
+        suptitle = f"{test_name}: OR={statistic:.2f}, p={p_value:.4f} {sig_symbol}"
+    else:
+        suptitle = f"{test_name}: χ²={statistic:.2f}, p={p_value:.4f} {sig_symbol}"
+    suptitle += f" | Cramér's V={cramers_v:.3f} ({cramers_v_interpretation})"
+
+    fig.suptitle(suptitle, fontsize=13, fontweight='bold', y=1.02)
+
+    plt.tight_layout()
+
+    if save_path:
+        fig.savefig(save_path, dpi=300, bbox_inches='tight')
+        print(f"       Figure saved to: {save_path}")
+
+    if show_plot:
+        plt.ion()
+        plt.show()
+
+    # =========================================================================
+    # SUMMARY
+    # =========================================================================
+    print("\n" + "=" * 70)
+    print("SUMMARY")
+    print("=" * 70)
+    print(f"Test used: {test_name}")
+    if assumption_warning:
+        print(f"⚠ {assumption_warning}")
+    print(f"Result: {'SIGNIFICANT' if significant else 'NOT SIGNIFICANT'} (p={p_value:.4f})")
+    if significant_cells:
+        print(f"Significant associations:")
+        for cell in significant_cells:
+            symbol = "↑" if cell['direction'] == "OVER" else "↓"
+            print(f"  {symbol} {cell['group']} has {cell['direction'].lower()} {cell['category']} "
+                  f"(z={cell['residual']:.2f})")
+    print(f"Effect size: Cramér's V = {cramers_v:.4f} ({cramers_v_interpretation})")
+    print("=" * 70)
+
+    # Return results dictionary
+    return {
+        'test_name': test_name,
+        'statistic': statistic,
+        'p_value': p_value,
+        'dof': dof if test_name != "Fisher's Exact Test" else None,
+        'significant': significant,
+        'contingency_table': contingency_table,
+        'expected_frequencies': expected_df,
+        'residuals_table': residuals_df,
+        'significant_cells': significant_cells,
+        'cramers_v': cramers_v,
+        'cramers_v_interpretation': cramers_v_interpretation,
+        'assumption_warning': assumption_warning,
+        'figure': fig
+    }
 
 
 # ========================================
@@ -106,212 +769,53 @@ def two_way_anova(age: np.ndarray, cluster_labels: np.ndarray, sex: np.ndarray) 
     # Create DataFrame for statsmodels
     df = pd.DataFrame({
         'age': age,
-        'cluster': cluster_labels.astype(str),  # treat as categorical
-        'sex': sex
+        'cluster': cluster_labels.astype(str),
+        'sex': sex.astype(str)
     })
 
-    # Perform two-way ANOVA using scipy (OLS approach)
-    # Main effect of cluster (controlling for sex)
-    unique_clusters = np.unique(cluster_labels)
-    unique_sex = np.unique(sex)
+    # Fit OLS model with interaction term using statsmodels
+    model = ols('age ~ C(cluster) + C(sex) + C(cluster):C(sex)', data=df).fit()
+    anova_table = anova_lm(model, typ=2)  # Type II SS for unbalanced designs
 
-    # Grand mean
-    grand_mean = np.mean(age)
-    n = len(age)
+    # Extract results
+    cluster_effect = {
+        'f_statistic': anova_table.loc['C(cluster)', 'F'],
+        'p_value': anova_table.loc['C(cluster)', 'PR(>F)'],
+        'df': (int(anova_table.loc['C(cluster)', 'df']), int(anova_table.loc['Residual', 'df']))
+    }
+    sex_effect = {
+        'f_statistic': anova_table.loc['C(sex)', 'F'],
+        'p_value': anova_table.loc['C(sex)', 'PR(>F)'],
+        'df': (int(anova_table.loc['C(sex)', 'df']), int(anova_table.loc['Residual', 'df']))
+    }
+    interaction_effect = {
+        'f_statistic': anova_table.loc['C(cluster):C(sex)', 'F'],
+        'p_value': anova_table.loc['C(cluster):C(sex)', 'PR(>F)'],
+        'df': (int(anova_table.loc['C(cluster):C(sex)', 'df']), int(anova_table.loc['Residual', 'df']))
+    }
 
-    # Sum of squares calculation
-    # Total SS
-    ss_total = np.sum((age - grand_mean) ** 2)
-
-    # Cluster main effect SS
-    ss_cluster = 0
-    for c in unique_clusters:
-        mask = cluster_labels == c
-        n_c = np.sum(mask)
-        mean_c = np.mean(age[mask])
-        ss_cluster += n_c * (mean_c - grand_mean) ** 2
-
-    # Sex main effect SS
-    ss_sex = 0
-    for s in unique_sex:
-        mask = sex == s
-        n_s = np.sum(mask)
-        mean_s = np.mean(age[mask])
-        ss_sex += n_s * (mean_s - grand_mean) ** 2
-
-    # Interaction SS (cell means - row means - col means + grand mean)
-    ss_interaction = 0
-    for c in unique_clusters:
-        for s in unique_sex:
-            mask = (cluster_labels == c) & (sex == s)
-            n_cs = np.sum(mask)
-            if n_cs > 0:
-                mean_cs = np.mean(age[mask])
-                mean_c = np.mean(age[cluster_labels == c])
-                mean_s = np.mean(age[sex == s])
-                ss_interaction += n_cs * (mean_cs - mean_c - mean_s + grand_mean) ** 2
-
-    # Residual SS
-    ss_residual = ss_total - ss_cluster - ss_sex - ss_interaction
-
-    # Degrees of freedom
-    df_cluster = len(unique_clusters) - 1
-    df_sex = len(unique_sex) - 1
-    df_interaction = df_cluster * df_sex
-    df_residual = n - (len(unique_clusters) * len(unique_sex))
-
-    # Mean squares
-    ms_cluster = ss_cluster / df_cluster
-    ms_sex = ss_sex / df_sex
-    ms_interaction = ss_interaction / df_interaction
-    ms_residual = ss_residual / df_residual
-
-    # F-statistics
-    f_cluster = ms_cluster / ms_residual
-    f_sex = ms_sex / ms_residual
-    f_interaction = ms_interaction / ms_residual
-
-    # P-values
-    p_cluster = 1 - stats.f.cdf(f_cluster, df_cluster, df_residual)
-    p_sex = 1 - stats.f.cdf(f_sex, df_sex, df_residual)
-    p_interaction = 1 - stats.f.cdf(f_interaction, df_interaction, df_residual)
-
-    # Create summary table
+    # Create clean summary table
     summary_table = pd.DataFrame({
-        'Source': ['Cluster', 'Sex', 'Cluster × Sex', 'Residual', 'Total'],
-        'SS': [ss_cluster, ss_sex, ss_interaction, ss_residual, ss_total],
-        'df': [df_cluster, df_sex, df_interaction, df_residual, n - 1],
-        'MS': [ms_cluster, ms_sex, ms_interaction, ms_residual, np.nan],
-        'F': [f_cluster, f_sex, f_interaction, np.nan, np.nan],
-        'p-value': [p_cluster, p_sex, p_interaction, np.nan, np.nan]
+        'Source': ['Cluster', 'Sex', 'Cluster × Sex', 'Residual'],
+        'SS': [anova_table.loc['C(cluster)', 'sum_sq'],
+               anova_table.loc['C(sex)', 'sum_sq'],
+               anova_table.loc['C(cluster):C(sex)', 'sum_sq'],
+               anova_table.loc['Residual', 'sum_sq']],
+        'df': [int(anova_table.loc['C(cluster)', 'df']),
+               int(anova_table.loc['C(sex)', 'df']),
+               int(anova_table.loc['C(cluster):C(sex)', 'df']),
+               int(anova_table.loc['Residual', 'df'])],
+        'F': [cluster_effect['f_statistic'], sex_effect['f_statistic'],
+              interaction_effect['f_statistic'], np.nan],
+        'p-value': [cluster_effect['p_value'], sex_effect['p_value'],
+                    interaction_effect['p_value'], np.nan]
     })
 
     return {
-        'cluster_effect': {
-            'f_statistic': f_cluster,
-            'p_value': p_cluster,
-            'df': (df_cluster, df_residual)
-        },
-        'sex_effect': {
-            'f_statistic': f_sex,
-            'p_value': p_sex,
-            'df': (df_sex, df_residual)
-        },
-        'interaction_effect': {
-            'f_statistic': f_interaction,
-            'p_value': p_interaction,
-            'df': (df_interaction, df_residual)
-        },
+        'cluster_effect': cluster_effect,
+        'sex_effect': sex_effect,
+        'interaction_effect': interaction_effect,
         'summary_table': summary_table
-    }
-
-
-# ========================================
-# SEX VALIDATION (Categorical Variable)
-# ========================================
-
-def chi_square_test(sex: np.ndarray, cluster_labels: np.ndarray) -> Dict:
-    """
-    Perform chi-square test of independence for sex distribution across clusters.
-
-    Question: Is cluster membership associated with sex?
-    Null Hypothesis: Cluster and sex are independent.
-
-    Args:
-        sex: numpy array of shape (N,). Sex category for each participant (e.g., 'M', 'F').
-        cluster_labels: numpy array of shape (N,). Cluster assignment for each participant.
-
-    Returns:
-        dict containing:
-            - 'chi2_statistic': Chi-square statistic value
-            - 'p_value': significance level (reject null if p < 0.05)
-            - 'dof': degrees of freedom
-            - 'expected_freq': expected frequencies under independence
-            - 'observed_freq': observed contingency table
-            - 'standardized_residuals': standardized residuals for each cell
-
-    Interpretation:
-        - p < 0.05: Sex distribution differs significantly across clusters
-        - p >= 0.05: Sex distribution is independent of clusters
-        - |standardized_residuals| > 2: Cell contributes significantly to chi-square
-
-    Example:
-        >>> sex = np.array(['M', 'F', 'M', 'F', 'M', 'F'])
-        >>> clusters = np.array([0, 0, 0, 1, 1, 1])
-        >>> result = chi_square_test(sex, clusters)
-        >>> print(f"χ²={result['chi2_statistic']:.2f}, p={result['p_value']:.4f}")
-    """
-    # Create contingency table
-    contingency_table = pd.crosstab(cluster_labels, sex)
-
-    # Perform chi-square test
-    chi2, p_value, dof, expected = stats.chi2_contingency(contingency_table)
-
-    # Calculate standardized residuals
-    standardized_residuals = (contingency_table.values - expected) / np.sqrt(expected)
-
-    return {
-        'chi2_statistic': chi2,
-        'p_value': p_value,
-        'dof': dof,
-        'expected_freq': expected,
-        'observed_freq': contingency_table,
-        'standardized_residuals': pd.DataFrame(
-            standardized_residuals,
-            index=contingency_table.index,
-            columns=contingency_table.columns
-        )
-    }
-
-def cramers_v(sex: np.ndarray, cluster_labels: np.ndarray) -> Dict:
-    """
-    Calculate Cramér's V effect size for chi-square test.
-
-    Question: How strong is the cluster-sex association?
-
-    Args:
-        sex: numpy array of shape (N,). Sex category for each participant.
-        cluster_labels: numpy array of shape (N,). Cluster assignment.
-
-    Returns:
-        dict containing:
-            - 'cramers_v': Cramér's V value (0 to 1)
-            - 'interpretation': Qualitative interpretation of effect size
-
-    Interpretation:
-        - V < 0.10: Negligible association
-        - V = 0.10-0.20: Small association
-        - V = 0.20-0.30: Medium association
-        - V > 0.30: Large association
-
-    Example:
-        >>> result = cramers_v(sex, clusters)
-        >>> print(f"Cramér's V = {result['cramers_v']:.3f} ({result['interpretation']})")
-    """
-    # Create contingency table
-    contingency_table = pd.crosstab(cluster_labels, sex)
-
-    # Perform chi-square test
-    chi2, _, _, _ = stats.chi2_contingency(contingency_table)
-
-    # Calculate Cramér's V
-    n = contingency_table.sum().sum()
-    min_dim = min(contingency_table.shape[0], contingency_table.shape[1]) - 1
-    cramers_v_value = np.sqrt(chi2 / (n * min_dim))
-
-    # Interpret effect size
-    if cramers_v_value < 0.10:
-        interpretation = "Negligible"
-    elif cramers_v_value < 0.20:
-        interpretation = "Small"
-    elif cramers_v_value < 0.30:
-        interpretation = "Medium"
-    else:
-        interpretation = "Large"
-
-    return {
-        'cramers_v': cramers_v_value,
-        'interpretation': interpretation
     }
 
 def omega_squared(age: np.ndarray, cluster_labels: np.ndarray) -> Dict:
@@ -517,6 +1021,301 @@ def kruskal_wallis_test(age: np.ndarray, cluster_labels: np.ndarray) -> Dict:
         'median_ages': median_ages,
         'mean_ranks': mean_ranks
     }
+
+
+# ========================================
+# SEX VALIDATION (Categorical Variable)
+# ========================================
+
+def chi_square_test(sex: np.ndarray, cluster_labels: np.ndarray) -> Dict:
+    """
+    Perform chi-square test of independence for sex distribution across clusters.
+
+    Question: Is cluster membership associated with sex?
+    Null Hypothesis: Cluster and sex are independent.
+
+    Args:
+        sex: numpy array of shape (N,). Sex category for each participant (e.g., 'M', 'F').
+        cluster_labels: numpy array of shape (N,). Cluster assignment for each participant.
+
+    Returns:
+        dict containing:
+            - 'chi2_statistic': Chi-square statistic value
+            - 'p_value': significance level (reject null if p < 0.05)
+            - 'dof': degrees of freedom
+            - 'expected_freq': expected frequencies under independence
+            - 'observed_freq': observed contingency table
+            - 'standardized_residuals': standardized residuals for each cell
+
+    Interpretation:
+        - p < 0.05: Sex distribution differs significantly across clusters
+        - p >= 0.05: Sex distribution is independent of clusters
+        - |standardized_residuals| > 2: Cell contributes significantly to chi-square
+
+    Example:
+        >>> sex = np.array(['M', 'F', 'M', 'F', 'M', 'F'])
+        >>> clusters = np.array([0, 0, 0, 1, 1, 1])
+        >>> result = chi_square_test(sex, clusters)
+        >>> print(f"χ²={result['chi2_statistic']:.2f}, p={result['p_value']:.4f}")
+    """
+    # Create contingency table
+    contingency_table = pd.crosstab(cluster_labels, sex)
+
+    # Perform chi-square test
+    chi2, p_value, dof, expected = stats.chi2_contingency(contingency_table)
+
+    # Calculate standardized residuals
+    standardized_residuals = (contingency_table.values - expected) / np.sqrt(expected)
+
+    return {
+        'chi2_statistic': chi2,
+        'p_value': p_value,
+        'dof': dof,
+        'expected_freq': expected,
+        'observed_freq': contingency_table,
+        'standardized_residuals': pd.DataFrame(
+            standardized_residuals,
+            index=contingency_table.index,
+            columns=contingency_table.columns
+        )
+    }
+
+def cramers_v(sex: np.ndarray, cluster_labels: np.ndarray) -> Dict:
+    """
+    Calculate Cramér's V effect size for chi-square test.
+
+    Question: How strong is the cluster-sex association?
+
+    Args:
+        sex: numpy array of shape (N,). Sex category for each participant.
+        cluster_labels: numpy array of shape (N,). Cluster assignment.
+
+    Returns:
+        dict containing:
+            - 'cramers_v': Cramér's V value (0 to 1)
+            - 'interpretation': Qualitative interpretation of effect size
+
+    Interpretation:
+        - V < 0.10: Negligible association
+        - V = 0.10-0.20: Small association
+        - V = 0.20-0.30: Medium association
+        - V > 0.30: Large association
+
+    Example:
+        >>> result = cramers_v(sex, clusters)
+        >>> print(f"Cramér's V = {result['cramers_v']:.3f} ({result['interpretation']})")
+    """
+    # Create contingency table
+    contingency_table = pd.crosstab(cluster_labels, sex)
+
+    # Perform chi-square test
+    chi2, _, _, _ = stats.chi2_contingency(contingency_table)
+
+    # Calculate Cramér's V
+    n = contingency_table.sum().sum()
+    min_dim = min(contingency_table.shape[0], contingency_table.shape[1]) - 1
+    cramers_v_value = np.sqrt(chi2 / (n * min_dim))
+
+    # Interpret effect size
+    if cramers_v_value < 0.10:
+        interpretation = "Negligible"
+    elif cramers_v_value < 0.20:
+        interpretation = "Small"
+    elif cramers_v_value < 0.30:
+        interpretation = "Medium"
+    else:
+        interpretation = "Large"
+
+    return {
+        'cramers_v': cramers_v_value,
+        'interpretation': interpretation
+    }
+
+
+# =============================================================================
+# POST-HOC TESTS
+# =============================================================================
+
+def games_howell_test(age: np.ndarray, cluster_labels: np.ndarray) -> Dict:
+    """
+    Perform Games-Howell post-hoc test for pairwise cluster comparisons.
+
+    Use when: Clusters have unequal variances (Levene's test p < 0.05).
+    Advantage: Robust to heteroscedasticity and unequal sample sizes.
+
+    Args:
+        age: numpy array of shape (N,). Age for each participant.
+        cluster_labels: numpy array of shape (N,). Cluster assignment.
+
+    Returns:
+        dict containing:
+            - 'pairwise_comparisons': pandas DataFrame with pairwise results
+    """
+    # Use pingouin for proper Games-Howell implementation
+    df = pd.DataFrame({'age': age, 'cluster': cluster_labels})
+
+    # Run Games-Howell test
+    result = pg.pairwise_gameshowell(data=df, dv='age', between='cluster')
+
+    # Rename columns for consistency
+    result = result.rename(columns={
+        'A': 'cluster_1', 'B': 'cluster_2',
+        'mean(A)': 'mean_1', 'mean(B)': 'mean_2',
+        'diff': 'mean_diff', 'pval': 'p_value'
+    })
+    result['reject_null'] = result['p_value'] < 0.05
+
+    return {'pairwise_comparisons': result}
+
+
+
+def dunn_test(age: np.ndarray, cluster_labels: np.ndarray, p_adjust: str = 'bonferroni') -> Dict:
+    """
+    Perform Dunn's test for post-hoc pairwise comparisons after Kruskal-Wallis.
+
+    Use when: Kruskal-Wallis test is significant (p < 0.05).
+    Purpose: Identify which cluster pairs differ in age distribution.
+
+    Args:
+        age: numpy array of shape (N,). Age for each participant.
+        cluster_labels: numpy array of shape (N,). Cluster assignment.
+        p_adjust: Method for p-value adjustment ('bonferroni', 'holm', 'fdr_bh', etc.)
+
+    Returns:
+        dict containing:
+            - 'pairwise_comparisons': pandas DataFrame with pairwise results
+            - 'p_value_matrix': symmetric matrix of adjusted p-values
+    """
+    # Use scikit-posthocs for proper Dunn's test implementation
+    df = pd.DataFrame({'age': age, 'cluster': cluster_labels})
+
+    # Get p-value matrix with specified correction
+    p_matrix = sp.posthoc_dunn(df, val_col='age', group_col='cluster', p_adjust=p_adjust)
+
+    # Convert to pairwise comparison DataFrame
+    unique_clusters = np.sort(np.unique(cluster_labels))
+    comparisons = []
+
+    for i, c1 in enumerate(unique_clusters):
+        for c2 in unique_clusters[i+1:]:
+            age1 = age[cluster_labels == c1]
+            age2 = age[cluster_labels == c2]
+
+            p_adj = p_matrix.loc[c1, c2]
+
+            comparisons.append({
+                'cluster_1': c1, 'cluster_2': c2,
+                'median_1': np.median(age1), 'median_2': np.median(age2),
+                'median_diff': np.median(age1) - np.median(age2),
+                'p_adj': p_adj,
+                'reject_null': p_adj < 0.05
+            })
+
+    return {
+        'pairwise_comparisons': pd.DataFrame(comparisons),
+        'p_value_matrix': p_matrix
+    }
+
+
+
+def fisher_exact_test(sex: np.ndarray, cluster_labels: np.ndarray) -> Dict:
+    """
+    Perform Fisher's exact test for sex-cluster association (small samples).
+
+    Use when: Any cell in contingency table has expected count < 5.
+    Alternative to: Chi-square test (which requires all cells >= 5).
+
+    Args:
+        sex: numpy array of shape (N,). Sex category (must have exactly 2 categories).
+        cluster_labels: numpy array of shape (N,). Cluster assignment.
+
+    Returns:
+        dict containing test results and contingency table
+    """
+    from scipy.stats import fisher_exact
+
+    contingency_table = pd.crosstab(cluster_labels, sex)
+
+    if contingency_table.shape != (2, 2):
+        return {
+            'statistic': None, 'p_value': None,
+            'contingency_table': contingency_table, 'valid': False,
+            'message': "Fisher's exact test requires exactly 2 clusters and 2 sex categories"
+        }
+
+    statistic, p_value = fisher_exact(contingency_table.values)
+
+    return {
+        'statistic': statistic, 'p_value': p_value,
+        'contingency_table': contingency_table, 'valid': True
+    }
+
+
+def print_games_howell_results(games_howell_result: Dict):
+    """Pretty print Games-Howell post-hoc test results."""
+    print("=" * 70)
+    print("GAMES-HOWELL POST-HOC TEST: Which cluster pairs differ in age?")
+    print("=" * 70)
+
+    df = games_howell_result['pairwise_comparisons']
+
+    for _, row in df.iterrows():
+        c1, c2 = row['cluster_1'], row['cluster_2']
+        sig = "***" if row['p_value'] < 0.001 else "**" if row['p_value'] < 0.01 else "*" if row['p_value'] < 0.05 else "ns"
+
+        print(f"\nCluster {c1} vs. Cluster {c2}:")
+        print(f"  Mean age: {row['mean_1']:.2f} vs {row['mean_2']:.2f}")
+        print(f"  Mean difference: {row['mean_diff']:+.2f} years")
+        print(f"  p-value: {row['p_value']:.4f} {sig}")
+    print("=" * 70)
+
+
+def print_dunn_results(dunn_result: Dict):
+    """Pretty print Dunn's test results."""
+    print("=" * 70)
+    print("DUNN'S TEST: Post-hoc for Kruskal-Wallis")
+    print("=" * 70)
+
+    df = dunn_result['pairwise_comparisons']
+
+    for _, row in df.iterrows():
+        c1, c2 = row['cluster_1'], row['cluster_2']
+        sig = "***" if row['p_adj'] < 0.001 else "**" if row['p_adj'] < 0.01 else "*" if row['p_adj'] < 0.05 else "ns"
+
+        print(f"\nCluster {c1} vs. Cluster {c2}:")
+        print(f"  Median age: {row['median_1']:.2f} vs {row['median_2']:.2f}")
+        print(f"  Median difference: {row['median_diff']:+.2f} years")
+        print(f"  p-adj: {row['p_adj']:.4f} {sig}")
+    print("=" * 70)
+
+
+def print_fisher_results(fisher_result: Dict):
+    """Pretty print Fisher's exact test results."""
+    print("=" * 70)
+    print("FISHER'S EXACT TEST: Sex-cluster association (small samples)")
+    print("=" * 70)
+
+    if not fisher_result['valid']:
+        print(f"WARNING: {fisher_result['message']}")
+        print("Use chi_square_test() instead for larger tables.")
+    else:
+        print(f"Odds Ratio: {fisher_result['statistic']:.4f}")
+        print(f"p-value: {fisher_result['p_value']:.4f}")
+
+        if fisher_result['p_value'] < 0.001:
+            print("Result: *** HIGHLY SIGNIFICANT (p < 0.001)")
+        elif fisher_result['p_value'] < 0.01:
+            print("Result: ** SIGNIFICANT (p < 0.01)")
+        elif fisher_result['p_value'] < 0.05:
+            print("Result: * SIGNIFICANT (p < 0.05)")
+        else:
+            print("Result: NOT SIGNIFICANT (p >= 0.05)")
+
+        print("\nContingency Table:")
+        print(fisher_result['contingency_table'])
+    print("=" * 70)
+
+
 
 
 # ========================================
@@ -1080,7 +1879,15 @@ def load_external_variables(external_csv_path: str,
         # Filter and reorder to match subject_ids
         df = df.loc[subject_ids]
 
-    age = df['age'].values
     sex = df['sex'].values
 
-    return age, sex
+    if 'age' in df.columns:
+        age = df['age'].values
+        return age, sex
+
+    age_group = df['age_group'].values
+    return age_group, sex
+
+
+
+
