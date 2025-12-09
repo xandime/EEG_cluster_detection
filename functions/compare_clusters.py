@@ -179,7 +179,7 @@ def compare_clusters(
         Dictionary with results for each algorithm including labels and metrics.
 
     Example:
-        >>> from compare_clusters import compare_clusters, CompareConfig, ClusterConfig
+        >>> from functions.compare_clusters import compare_clusters, CompareConfig, ClusterConfig
         >>> config = CompareConfig(
         ...     kmeans=ClusterConfig(n_clusters=4),
         ...     visualize_3d=True,
