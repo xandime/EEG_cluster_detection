@@ -2,7 +2,6 @@
 
 import numpy as np
 import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D
 from sklearn.decomposition import PCA
 from typing import List, Dict, Optional, Tuple
 
@@ -44,15 +43,40 @@ def plot_3d_clusters(
         ax = fig.add_subplot(111, projection='3d')
 
     i, j, k = feature_indices
+    # Order labels so non-noise clusters are drawn first (noise last)
     unique_labels = np.unique(labels)
-    colors = plt.cm.get_cmap(cmap)(np.linspace(0, 1, len(unique_labels)))
+    pos_labels = [l for l in unique_labels if l >= 0]
+    neg_labels = [l for l in unique_labels if l < 0]
+    ordered_labels = pos_labels + neg_labels
 
-    for idx, label in enumerate(unique_labels):
+    # Build a larger qualitative palette by concatenating common qualitative colormaps
+    base_cmaps = ['tab10', 'tab20', 'Dark2', 'Set1', 'Paired']
+    palette = []
+    for name in base_cmaps:
+        cmap_obj = plt.cm.get_cmap(name)
+        N = getattr(cmap_obj, 'N', 10)
+        palette.extend([cmap_obj(i) for i in range(N)])
+
+    # Ensure we have at least as many colors as clusters; fallback to HSV sampling if needed
+    n_needed = max(1, len(ordered_labels))
+    if len(palette) < n_needed:
+        extra = list(plt.cm.get_cmap('hsv')(np.linspace(0, 1, n_needed - len(palette))))
+        palette.extend(extra)
+
+    # Plot clusters: use light gray for noise and colored markers with black edges for contrast
+    for idx, label in enumerate(ordered_labels):
         mask = labels == label
-        label_name = f"Cluster {label}" if label >= 0 else "Noise"
+        if label < 0:
+            color = (0.8, 0.8, 0.8, 0.9)  # light gray for noise
+            label_name = "Noise"
+        else:
+            color = palette[idx]
+            label_name = f"Cluster {label}"
+
         ax.scatter(
             data[mask, i], data[mask, j], data[mask, k],
-            c=[colors[idx]], label=label_name, alpha=0.7, s=30
+            c=[color], label=label_name, alpha=0.85, s=40,
+            edgecolors='k', linewidths=0.3
         )
 
     if feature_names is not None and len(feature_names) > max(feature_indices):
@@ -221,4 +245,3 @@ def show_or_save(fig: plt.Figure, save_path: Optional[str] = None, show: bool = 
         plt.show()
     else:
         plt.close(fig)
-
