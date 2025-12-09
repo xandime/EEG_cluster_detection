@@ -10,15 +10,15 @@ from statsmodels.formula.api import ols
 from statsmodels.stats.anova import anova_lm
 
 
-# ========================================
-# COMPREHENSIVE ANALYSIS FUNCTION
-# ========================================
+
 
 def analyze_continuous_variable(df: pd.DataFrame,
                                  group_col: str,
                                  value_col: str,
                                  alpha: float = 0.05,
                                  show_plot: bool = True,
+                                 verbose: bool = False,
+                                 verboseSummary: bool = True,
                                  save_path: Optional[str] = None) -> Dict:
     """
     Comprehensive analysis of a continuous variable (e.g., Age) across groups (e.g., Clusters).
@@ -68,14 +68,16 @@ def analyze_continuous_variable(df: pd.DataFrame,
     # =========================================================================
     # STEP 1: ASSUMPTION CHECK - NORMALITY (Shapiro-Wilk per group)
     # =========================================================================
-    print("=" * 70)
-    print(f"ANALYZING: {value_col} by {group_col}")
-    print("=" * 70)
+    if verbose:
+        print("=" * 70)
+        print(f"ANALYZING: {value_col} by {group_col}")
+        print("=" * 70)
 
     groups = df[group_col].unique()
     n_groups = len(groups)
 
-    print(f"\n[1/5] CHECKING NORMALITY (Shapiro-Wilk test per group)...")
+    if verbose:
+        print(f"\n[1/5] CHECKING NORMALITY (Shapiro-Wilk test per group)...")
 
     normality_results = {}
     all_normal = True
@@ -92,36 +94,43 @@ def analyze_continuous_variable(df: pd.DataFrame,
                 all_normal = False
 
             status = "✓ Normal" if is_normal else "✗ Non-normal"
-            print(f"       Group {group}: W={stat:.4f}, p={p:.4f} → {status}")
+            if verbose:
+                print(f"       Group {group}: W={stat:.4f}, p={p:.4f} → {status}")
         else:
             normality_results[group] = {'statistic': None, 'p_value': None, 'normal': None}
-            print(f"       Group {group}: Insufficient samples (n={len(group_data)})")
+            if verbose:
+                print(f"       Group {group}: Insufficient samples (n={len(group_data)})")
 
     normality_assumption = all_normal
-    print(f"       → Overall: {'NORMAL' if normality_assumption else 'NON-NORMAL'}")
+    if verbose:
+        print(f"       → Overall: {'NORMAL' if normality_assumption else 'NON-NORMAL'}")
 
     # =========================================================================
     # STEP 2: ASSUMPTION CHECK - VARIANCE HOMOGENEITY (Levene's test)
     # =========================================================================
-    print(f"\n[2/5] CHECKING VARIANCE HOMOGENEITY (Levene's test)...")
+    if verbose:
+        print(f"\n[2/5] CHECKING VARIANCE HOMOGENEITY (Levene's test)...")
 
     group_data_list = [df[df[group_col] == g][value_col].dropna().values for g in sorted(groups)]
     levene_stat, levene_p = stats.levene(*group_data_list)
     equal_variance = levene_p > alpha
 
     status = "✓ Equal" if equal_variance else "✗ Unequal"
-    print(f"       Levene's test: W={levene_stat:.4f}, p={levene_p:.4f} → {status} variances")
+    if verbose:
+        print(f"       Levene's test: W={levene_stat:.4f}, p={levene_p:.4f} → {status} variances")
 
     # =========================================================================
     # STEP 3: SELECT AND RUN MAIN TEST
     # =========================================================================
-    print(f"\n[3/5] SELECTING AND RUNNING MAIN TEST...")
+    if verbose:
+        print(f"\n[3/5] SELECTING AND RUNNING MAIN TEST...")
 
     if normality_assumption and equal_variance:
         # Normal + Equal Variance → One-Way ANOVA
         test_name = "One-Way ANOVA"
-        print(f"       Assumptions: Normal=True, Equal Variance=True")
-        print(f"       → Running {test_name}...")
+        if verbose:
+            print(f"       Assumptions: Normal=True, Equal Variance=True")
+            print(f"       → Running {test_name}...")
 
         f_stat, p_value = stats.f_oneway(*group_data_list)
         statistic = f_stat
@@ -130,8 +139,9 @@ def analyze_continuous_variable(df: pd.DataFrame,
     elif normality_assumption and not equal_variance:
         # Normal + Unequal Variance → Welch's ANOVA
         test_name = "Welch's ANOVA"
-        print(f"       Assumptions: Normal=True, Equal Variance=False")
-        print(f"       → Running {test_name}...")
+        if verbose:
+            print(f"       Assumptions: Normal=True, Equal Variance=False")
+            print(f"       → Running {test_name}...")
 
         # Use pingouin for Welch's ANOVA
         welch_result = pg.welch_anova(data=df, dv=value_col, between=group_col)
@@ -143,8 +153,9 @@ def analyze_continuous_variable(df: pd.DataFrame,
     else:
         # Non-Normal → Kruskal-Wallis
         test_name = "Kruskal-Wallis"
-        print(f"       Assumptions: Normal=False")
-        print(f"       → Running {test_name}...")
+        if verbose:
+            print(f"       Assumptions: Normal=False")
+            print(f"       → Running {test_name}...")
 
         h_stat, p_value = stats.kruskal(*group_data_list)
         statistic = h_stat
@@ -153,13 +164,15 @@ def analyze_continuous_variable(df: pd.DataFrame,
     significant = p_value < alpha
     sig_symbol = "***" if p_value < 0.001 else "**" if p_value < 0.01 else "*" if p_value < 0.05 else "ns"
 
-    print(f"       Result: statistic={statistic:.4f}, p={p_value:.4f} {sig_symbol}")
-    print(f"       → {'SIGNIFICANT' if significant else 'NOT SIGNIFICANT'} (α={alpha})")
+    if verbose:
+        print(f"       Result: statistic={statistic:.4f}, p={p_value:.4f} {sig_symbol}")
+        print(f"       → {'SIGNIFICANT' if significant else 'NOT SIGNIFICANT'} (α={alpha})")
 
     # =========================================================================
     # STEP 4: POST-HOC ANALYSIS (if significant)
     # =========================================================================
-    print(f"\n[4/5] POST-HOC ANALYSIS...")
+    if verbose:
+        print(f"\n[4/5] POST-HOC ANALYSIS...")
 
     significant_pairs = []
     posthoc_table = None
@@ -167,7 +180,8 @@ def analyze_continuous_variable(df: pd.DataFrame,
     if significant and n_groups > 2:
         if test_type == "parametric":
             # Games-Howell (robust to unequal variances)
-            print(f"       → Running Games-Howell post-hoc test...")
+            if verbose:
+                print(f"       → Running Games-Howell post-hoc test...")
             posthoc_result = pg.pairwise_gameshowell(data=df, dv=value_col, between=group_col)
             posthoc_table = posthoc_result
 
@@ -176,11 +190,13 @@ def analyze_continuous_variable(df: pd.DataFrame,
                 if row['pval'] < alpha:
                     pair = (int(row['A']), int(row['B']))
                     significant_pairs.append(pair)
-                    print(f"       {row['A']} vs {row['B']}: p={row['pval']:.4f} *")
+                    if verbose:
+                        print(f"       {row['A']} vs {row['B']}: p={row['pval']:.4f} *")
 
         else:
             # Dunn's test with Bonferroni correction
-            print(f"       → Running Dunn's test (Bonferroni correction)...")
+            if verbose:
+                print(f"       → Running Dunn's test (Bonferroni correction)...")
             posthoc_matrix = sp.posthoc_dunn(df, val_col=value_col, group_col=group_col, p_adjust='bonferroni')
 
             # Convert matrix to pairwise table
@@ -192,22 +208,27 @@ def analyze_continuous_variable(df: pd.DataFrame,
                     pairs_list.append({'group_1': g1, 'group_2': g2, 'p_adj': p_adj})
                     if p_adj < alpha:
                         significant_pairs.append((int(g1), int(g2)))
-                        print(f"       {g1} vs {g2}: p_adj={p_adj:.4f} *")
+                        if verbose:
+                            print(f"       {g1} vs {g2}: p_adj={p_adj:.4f} *")
 
             posthoc_table = pd.DataFrame(pairs_list)
 
         if not significant_pairs:
-            print(f"       → No significant pairwise differences found")
+            if verbose:
+                print(f"       → No significant pairwise differences found")
     elif significant and n_groups == 2:
-        print(f"       → Only 2 groups, no post-hoc needed (main test is sufficient)")
+        if verbose:
+            print(f"       → Only 2 groups, no post-hoc needed (main test is sufficient)")
         significant_pairs = [(sorted(groups)[0], sorted(groups)[1])]
     else:
-        print(f"       → Skipped (main test not significant)")
+        if verbose:
+            print(f"       → Skipped (main test not significant)")
 
     # =========================================================================
     # STEP 5: EFFECT SIZE
     # =========================================================================
-    print(f"\n[5/5] CALCULATING EFFECT SIZE...")
+    if verbose:
+        print(f"\n[5/5] CALCULATING EFFECT SIZE...")
 
     # Get overall data
     all_values = df[value_col].dropna().values
@@ -258,12 +279,16 @@ def analyze_continuous_variable(df: pd.DataFrame,
     else:
         effect_interpretation = "Large"
 
-    print(f"       {effect_size_name} = {effect_size:.4f} ({effect_interpretation})")
+    if verbose:
+        print(f"       {effect_size_name} = {effect_size:.4f} ({effect_interpretation})")
+    else:
+        print(f"       {effect_size_name} = {effect_size:.4f} ({effect_interpretation})")
 
     # =========================================================================
     # STEP 6: VISUALIZATION
     # =========================================================================
-    print(f"\n[PLOT] Generating visualization...")
+    if verbose:
+        print(f"\n[PLOT] Generating visualization...")
 
     plt.ioff()
     fig, ax = plt.subplots(figsize=(10, 6))
@@ -308,7 +333,8 @@ def analyze_continuous_variable(df: pd.DataFrame,
 
     if save_path:
         fig.savefig(save_path, dpi=300, bbox_inches='tight')
-        print(f"       Figure saved to: {save_path}")
+        if verbose:
+            print(f"       Figure saved to: {save_path}")
 
     if show_plot:
         plt.ion()
@@ -317,15 +343,16 @@ def analyze_continuous_variable(df: pd.DataFrame,
     # =========================================================================
     # SUMMARY
     # =========================================================================
-    print("\n" + "=" * 70)
-    print("SUMMARY")
-    print("=" * 70)
-    print(f"Test used: {test_name}")
-    print(f"Result: {'SIGNIFICANT' if significant else 'NOT SIGNIFICANT'} (p={p_value:.4f})")
-    if significant_pairs:
-        print(f"Significant pairs: {significant_pairs}")
-    print(f"Effect size: {effect_size_name} = {effect_size:.4f} ({effect_interpretation})")
-    print("=" * 70)
+    if verboseSummary:
+        print("\n" + "=" * 70)
+        print("SUMMARY Continuous Variable")
+        print("=" * 70)
+        print(f"Test used: {test_name}")
+        print(f"Result: {'SIGNIFICANT' if significant else 'NOT SIGNIFICANT'} (p={p_value:.4f})")
+        if significant_pairs:
+            print(f"Significant pairs: {significant_pairs}")
+        print(f"Effect size: {effect_size_name} = {effect_size:.4f} ({effect_interpretation})")
+        print("=" * 70)
 
     # Return results dictionary
     return {
@@ -353,6 +380,8 @@ def analyze_categorical_variable(df: pd.DataFrame,
                                   cat_col: str,
                                   alpha: float = 0.05,
                                   show_plot: bool = True,
+                                  verbose: bool = False,
+                                  verboseSummary: bool = True,
                                   save_path: Optional[str] = None) -> Dict:
     """
     Comprehensive analysis of categorical variable relationships (e.g., Cluster vs Sex).
@@ -401,11 +430,12 @@ def analyze_categorical_variable(df: pd.DataFrame,
     # =========================================================================
     # STEP 1: CREATE CONTINGENCY TABLE
     # =========================================================================
-    print("=" * 70)
-    print(f"ANALYZING: {cat_col} by {group_col}")
-    print("=" * 70)
+    if verbose:
+        print("=" * 70)
+        print(f"ANALYZING: {cat_col} by {group_col}")
+        print("=" * 70)
 
-    print(f"\n[1/5] CREATING CONTINGENCY TABLE...")
+        print(f"\n[1/5] CREATING CONTINGENCY TABLE...")
 
     # Create contingency table
     contingency_table = pd.crosstab(df[group_col], df[cat_col])
@@ -414,15 +444,17 @@ def analyze_categorical_variable(df: pd.DataFrame,
     n_categories = contingency_table.shape[1]
     n_total = contingency_table.sum().sum()
 
-    print(f"       Table shape: {n_groups} groups × {n_categories} categories")
-    print(f"       Total observations: {n_total}")
-    print(f"\n       Observed frequencies:")
-    print(contingency_table.to_string().replace('\n', '\n       '))
+    if verbose:
+        print(f"       Table shape: {n_groups} groups × {n_categories} categories")
+        print(f"       Total observations: {n_total}")
+        print(f"\n       Observed frequencies:")
+        print(contingency_table.to_string().replace('\n', '\n       '))
 
     # =========================================================================
     # STEP 2: ASSUMPTION CHECK - EXPECTED FREQUENCIES
     # =========================================================================
-    print(f"\n[2/5] CHECKING EXPECTED FREQUENCIES...")
+    if verbose:
+        print(f"\n[2/5] CHECKING EXPECTED FREQUENCIES...")
 
     # Calculate expected frequencies
     chi2_stat, p_value_chi2, dof, expected = stats.chi2_contingency(contingency_table)
@@ -436,15 +468,17 @@ def analyze_categorical_variable(df: pd.DataFrame,
     total_cells = expected.size
     pct_below_5 = (cells_below_5 / total_cells) * 100
 
-    print(f"       Minimum expected frequency: {min_expected:.2f}")
-    print(f"       Cells with expected < 5: {cells_below_5}/{total_cells} ({pct_below_5:.1f}%)")
+    if verbose:
+        print(f"       Minimum expected frequency: {min_expected:.2f}")
+        print(f"       Cells with expected < 5: {cells_below_5}/{total_cells} ({pct_below_5:.1f}%)")
 
     assumption_warning = None
 
     # =========================================================================
     # STEP 3: SELECT AND RUN MAIN TEST
     # =========================================================================
-    print(f"\n[3/5] SELECTING AND RUNNING MAIN TEST...")
+    if verbose:
+        print(f"\n[3/5] SELECTING AND RUNNING MAIN TEST...")
 
     is_2x2 = (n_groups == 2 and n_categories == 2)
 
@@ -452,8 +486,9 @@ def analyze_categorical_variable(df: pd.DataFrame,
         if is_2x2:
             # Fisher's Exact Test for 2x2 tables
             test_name = "Fisher's Exact Test"
-            print(f"       Expected frequency < 5 detected in 2×2 table")
-            print(f"       → Running {test_name}...")
+            if verbose:
+                print(f"       Expected frequency < 5 detected in 2×2 table")
+                print(f"       → Running {test_name}...")
 
             odds_ratio, p_value = stats.fisher_exact(contingency_table.values)
             statistic = odds_ratio
@@ -463,16 +498,18 @@ def analyze_categorical_variable(df: pd.DataFrame,
             test_name = "Chi-Square Test (with warning)"
             assumption_warning = (f"WARNING: {cells_below_5} cells ({pct_below_5:.1f}%) have expected "
                                   f"frequency < 5. Results may be unreliable.")
-            print(f"       ⚠ {assumption_warning}")
-            print(f"       → Running Chi-Square Test anyway (no alternative for non-2×2)...")
+            if verbose:
+                print(f"       ⚠ {assumption_warning}")
+                print(f"       → Running Chi-Square Test anyway (no alternative for non-2×2)...")
 
             statistic = chi2_stat
             p_value = p_value_chi2
     else:
         # Standard Chi-Square Test
         test_name = "Chi-Square Test"
-        print(f"       All expected frequencies ≥ 5 ✓")
-        print(f"       → Running {test_name}...")
+        if verbose:
+            print(f"       All expected frequencies ≥ 5 ✓")
+            print(f"       → Running {test_name}...")
 
         statistic = chi2_stat
         p_value = p_value_chi2
@@ -480,16 +517,18 @@ def analyze_categorical_variable(df: pd.DataFrame,
     significant = p_value < alpha
     sig_symbol = "***" if p_value < 0.001 else "**" if p_value < 0.01 else "*" if p_value < 0.05 else "ns"
 
-    if test_name == "Fisher's Exact Test":
-        print(f"       Result: Odds Ratio={statistic:.4f}, p={p_value:.4f} {sig_symbol}")
-    else:
-        print(f"       Result: χ²={statistic:.4f}, df={dof}, p={p_value:.4f} {sig_symbol}")
-    print(f"       → {'SIGNIFICANT' if significant else 'NOT SIGNIFICANT'} (α={alpha})")
+    if verbose:
+        if test_name == "Fisher's Exact Test":
+            print(f"       Result: Odds Ratio={statistic:.4f}, p={p_value:.4f} {sig_symbol}")
+        else:
+            print(f"       Result: χ²={statistic:.4f}, df={dof}, p={p_value:.4f} {sig_symbol}")
+        print(f"       → {'SIGNIFICANT' if significant else 'NOT SIGNIFICANT'} (α={alpha})")
 
     # =========================================================================
     # STEP 4: POST-HOC - ADJUSTED STANDARDIZED RESIDUALS
     # =========================================================================
-    print(f"\n[4/5] CALCULATING ADJUSTED STANDARDIZED RESIDUALS...")
+    if verbose:
+        print(f"\n[4/5] CALCULATING ADJUSTED STANDARDIZED RESIDUALS...")
 
     # Calculate adjusted standardized residuals
     # Formula: (observed - expected) / sqrt(expected * (1 - row_margin/n) * (1 - col_margin/n))
@@ -511,8 +550,9 @@ def analyze_categorical_variable(df: pd.DataFrame,
     z_critical = stats.norm.ppf(1 - alpha / 2)  # 1.96 for α=0.05
     significant_cells = []
 
-    print(f"       Critical value: |z| > {z_critical:.2f}")
-    print(f"\n       Adjusted Standardized Residuals:")
+    if verbose:
+        print(f"       Critical value: |z| > {z_critical:.2f}")
+        print(f"\n       Adjusted Standardized Residuals:")
 
     for group in contingency_table.index:
         for cat in contingency_table.columns:
@@ -532,21 +572,23 @@ def analyze_categorical_variable(df: pd.DataFrame,
                 })
 
     # Print residuals table
-    print(residuals_df.round(2).to_string().replace('\n', '\n       '))
+    if verbose:
+        print(residuals_df.round(2).to_string().replace('\n', '\n       '))
 
-    if significant_cells:
-        print(f"\n       Significant cells (|z| > {z_critical:.2f}):")
-        for cell in significant_cells:
-            symbol = "↑" if cell['direction'] == "OVER" else "↓"
-            print(f"       {symbol} {cell['group']} × {cell['category']}: "
-                  f"z={cell['residual']:.2f} ({cell['direction']}-represented)")
-    else:
-        print(f"\n       No significant deviations found")
+        if significant_cells:
+            print(f"\n       Significant cells (|z| > {z_critical:.2f}):")
+            for cell in significant_cells:
+                symbol = "↑" if cell['direction'] == "OVER" else "↓"
+                print(f"       {symbol} {cell['group']} × {cell['category']}: "
+                      f"z={cell['residual']:.2f} ({cell['direction']}-represented)")
+        else:
+            print(f"\n       No significant deviations found")
 
     # =========================================================================
     # STEP 5: EFFECT SIZE - CRAMÉR'S V
     # =========================================================================
-    print(f"\n[5/5] CALCULATING EFFECT SIZE (Cramér's V)...")
+    if verbose:
+        print(f"\n[5/5] CALCULATING EFFECT SIZE (Cramér's V)...")
 
     # Cramér's V = sqrt(chi2 / (n * min(r-1, c-1)))
     min_dim = min(n_groups - 1, n_categories - 1)
@@ -565,12 +607,15 @@ def analyze_categorical_variable(df: pd.DataFrame,
     else:
         cramers_v_interpretation = "Large"
 
-    print(f"       Cramér's V = {cramers_v:.4f} ({cramers_v_interpretation})")
+    if verbose:
+        print(f"       Cramér's V = {cramers_v:.4f} ({cramers_v_interpretation})")
+
 
     # =========================================================================
     # STEP 6: VISUALIZATION - STACKED BAR CHART
     # =========================================================================
-    print(f"\n[PLOT] Generating stacked bar chart...")
+    if verbose:
+        print(f"\n[PLOT] Generating stacked bar chart...")
 
     plt.ioff()
     fig, axes = plt.subplots(1, 2, figsize=(14, 6))
@@ -626,7 +671,8 @@ def analyze_categorical_variable(df: pd.DataFrame,
 
     if save_path:
         fig.savefig(save_path, dpi=300, bbox_inches='tight')
-        print(f"       Figure saved to: {save_path}")
+        if verbose:
+            print(f"       Figure saved to: {save_path}")
 
     if show_plot:
         plt.ion()
@@ -635,21 +681,20 @@ def analyze_categorical_variable(df: pd.DataFrame,
     # =========================================================================
     # SUMMARY
     # =========================================================================
-    print("\n" + "=" * 70)
-    print("SUMMARY")
-    print("=" * 70)
-    print(f"Test used: {test_name}")
-    if assumption_warning:
-        print(f"⚠ {assumption_warning}")
-    print(f"Result: {'SIGNIFICANT' if significant else 'NOT SIGNIFICANT'} (p={p_value:.4f})")
-    if significant_cells:
-        print(f"Significant associations:")
-        for cell in significant_cells:
-            symbol = "↑" if cell['direction'] == "OVER" else "↓"
-            print(f"  {symbol} {cell['group']} has {cell['direction'].lower()} {cell['category']} "
-                  f"(z={cell['residual']:.2f})")
-    print(f"Effect size: Cramér's V = {cramers_v:.4f} ({cramers_v_interpretation})")
-    print("=" * 70)
+    if verboseSummary:
+        print("\n" + "=" * 70)
+        print("SUMMARY Categorical Analysis")
+        print("=" * 70)
+        print(f"Test used: {test_name}")
+        print(f"Result: {'SIGNIFICANT' if significant else 'NOT SIGNIFICANT'} (p={p_value:.4f})")
+        if significant_cells:
+            print(f"Significant associations:")
+            for cell in significant_cells:
+                symbol = "↑" if cell['direction'] == "OVER" else "↓"
+                print(f"  {symbol} {cell['group']} has {cell['direction'].lower()} {cell['category']} "
+                      f"(z={cell['residual']:.2f})")
+        print(f"Effect size: Cramér's V = {cramers_v:.4f} ({cramers_v_interpretation})")
+        print("=" * 70)
 
     # Return results dictionary
     return {
@@ -1887,7 +1932,4 @@ def load_external_variables(external_csv_path: str,
 
     age_group = df['age_group'].values
     return age_group, sex
-
-
-
 
