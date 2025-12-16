@@ -41,8 +41,8 @@ class CompareConfig:
     agglomerative: ClusterConfig = field(default_factory=lambda: ClusterConfig())
     gmm: ClusterConfig = field(default_factory=lambda: ClusterConfig(selection_metric='bic'))
     optics: ClusterConfig = field(default_factory=lambda: ClusterConfig(
-        k_range=list(range(3, 15)),
-        params={'min_samples': 5}
+        k_range=list(range(2, 7)),
+        params={}
     ))
 
     visualize_3d: bool = False
