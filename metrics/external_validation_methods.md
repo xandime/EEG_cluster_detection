@@ -137,7 +137,7 @@ Female      -2.5        +0.8        +1.2
 
 ---
 
-## Advanced Methods (Optional)
+## Advanced Methods
 
 ### 1. Multinomial Logistic Regression
 **Question:** How well do age and sex **predict** cluster membership?
@@ -176,12 +176,12 @@ Cluster 2 (vs. Cluster 1):
 
 ## Recommended Workflow
 
-### Step 1: Assumption Checks (5 min)
+### Step 1: Assumption Checks 
 1. Shapiro-Wilk test for age normality per cluster
 2. Levene's test for age variance equality
 3. Check contingency table cell counts ≥ 5
 
-### Step 2: Primary Tests (10 min)
+### Step 2: Primary Tests 
 1. **Age:** ANOVA + omega-squared + Games-Howell
 2. **Sex:** Chi-square + Cramér's V + standardized residuals
 
